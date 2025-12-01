@@ -268,7 +268,7 @@ function IsResourceNameAvailable {
 # To get the Azure AD app detail. 
 function GetAzureADApp {
     param ($appName)
-    $app = az ad app list --filter "displayName eq '$appName'" | ConvertFrom-Json
+    $app = az ad app list --display-name $appName | ConvertFrom-Json
     return $app
 }
 
@@ -310,7 +310,8 @@ function CreateAzureADApp {
             if ($updateDecision -eq 0) {
                 WriteI -message "Updating the existing app..."
 
-                az ad app update --id $app.appId --available-to-other-tenants $MultiTenant --oauth2-allow-implicit-flow $AllowImplicitFlow
+                $audience = if ($MultiTenant) { "AzureADMultipleOrgs" } else { "AzureADMyOrg" }
+                az ad app update --id $app.appId --sign-in-audience $audience --enable-access-token-issuance $AllowImplicitFlow --enable-id-token-issuance $AllowImplicitFlow
 
                 WriteI -message "Waiting for app update to finish..."
 
@@ -323,7 +324,8 @@ function CreateAzureADApp {
             }
         } else {
             # Create Azure AD app registration using CLI
-             az ad app create --display-name $appName --available-to-other-tenants $MultiTenant --oauth2-allow-implicit-flow $AllowImplicitFlow
+            $audience = if ($MultiTenant) { "AzureADMultipleOrgs" } else { "AzureADMyOrg" }
+             az ad app create --display-name $appName --sign-in-audience $audience --enable-access-token-issuance $AllowImplicitFlow --enable-id-token-issuance $AllowImplicitFlow
 
             WriteI -message "Waiting for app creation to finish..."
 
@@ -751,11 +753,16 @@ function ADAppUpdate {
     WriteI -message "`nUpdating graph app..."
 
     #Removing default scope user_impersonation
-    $DEFAULT_SCOPE=$(az ad app show --id $configAppId | jq '.oauth2Permissions[0].isEnabled = false' | jq -r '.oauth2Permissions')
-    $DEFAULT_SCOPE>>scope.json
-    az ad app update --id $configAppId --set oauth2Permissions=@scope.json
-    Remove-Item .\scope.json
-    az ad app update --id $configAppId --remove oauth2Permissions
+    #Removing default scope user_impersonation
+    $appJson = az ad app show --id $configAppId | ConvertFrom-Json
+    if ($appJson.api.oauth2PermissionScopes.Count -gt 0) {
+        $appJson.api.oauth2PermissionScopes[0].isEnabled = $false
+        $scopes = $appJson.api.oauth2PermissionScopes | ConvertTo-Json -Depth 10 -Compress
+        $scopes | Out-File -FilePath .\scope.json -Encoding ASCII
+        az ad app update --id $configAppId --set api.oauth2PermissionScopes=@scope.json
+        Remove-Item .\scope.json
+    }
+    az ad app update --id $configAppId --remove api.oauth2PermissionScopes
     
     #Re-assign app detail after removing default scope user_impersonation
     $apps = Get-AzureADApplication -Filter "DisplayName eq '$appName'"
@@ -776,10 +783,10 @@ function ADAppUpdate {
     az ad app update --id $configAppId --identifier-uris $IdentifierUris
     WriteI -message "App URI set"        
             
-    $configApp = az ad app update --id $configAppId --reply-urls $RedirectUris
+    $configApp = az ad app update --id $configAppId --web-redirect-uris $RedirectUris
     WriteI -message "App reply-urls set"  
             
-    az ad app update --id $configAppId --optional-claims './AadOptionalClaims.json'
+    az ad app update --id $configAppId --set optionalClaims=@AadOptionalClaims.json
     WriteI -message "App optionalclaim set."
                     
     # Create access_as_user scope
